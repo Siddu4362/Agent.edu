@@ -6,106 +6,413 @@ TO help to learn and educate poor children
 ### Demo -- Show your Solution
 ### The Build -- How you created it, what tools ot technologies you used.
 ### If i had more time, this is what i'd do
-NOTE: This is a sample submssion for the Kaggle Agents Intensive Capstone project. Use this as a point of reference for structuring your submission. Avoid simply copying and reusing logic and or concepts.
 
-NOTE: This sample submssion was inspired and lifted from the official ADK-Samples repository. Special thanks to Pier Paolo Ippolito for his contributions.
+# app.py
+"""
+Education AI prototype for underprivileged children.
+Single-file Flask app with an adaptive quiz engine and progress tracking.
 
-This project contains the core logic for Agent Shutton, a multi-agent system designed to assist users in creating various types of blog posts. The agent is built using Google Agent Development Kit (ADK) and follows a modular architecture.
+Run:
+    pip install flask flask_sqlalchemy werkzeug
+    python app.py
 
-Architecture
+Open http://127.0.0.1:5000 in your browser.
 
-Problem Statement
-Writing blogs manually is laborious because it requires significant time investment in research, drafting, editing, and formatting each piece of content from scratch. The repetitive nature of structuring posts and maintaining consistent tone across multiple articles can quickly become mentally exhausting and drain creative energy. Manual blog writing also struggles to scale when content demands increase, forcing writers to choose between quality and quantity or invest in hiring additional staff. Automation can streamline research gathering, generate initial drafts, handle formatting consistency, and maintain publishing schedules, allowing human writers to focus their expertise on strategic direction, creative refinement, and adding unique insights that truly require human judgment.
+This is a simple prototype for demonstration and teaching purposes.
+"""
 
-Solution Statement
-Agents can automatically research topics by gathering information from multiple sources, synthesizing key insights, and identifying trending themes relevant to your target audience. They can generate initial draft outlines or full articles based on specific parameters like tone, length, significantly reducing the time spent on the blank page problem. Additionally, agents can manage the entire publishing workflow by scheduling posts, distributing content across multiple platforms, monitoring performance metrics, and even suggesting improvements based on engagement data—transforming blog management from a manual chore into a streamlined, data-driven process.
+from flask import Flask, request, redirect, url_for, render_template_string, session, flash
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+import random
+import datetime
 
-Architecture
-Core to Agent Shutton is the blogger_agent -- a prime example of a multi-agent system. It's not a monolithic application but an ecosystem of specialized agents, each contributing to a different stage of the blog creation process. This modular approach, facilitated by Google's Agent Development Kit, allows for a sophisticated and robust workflow. The central orchestrator of this system is the interactive_blogger_agent.
+app = Flask(_name_)
+app.config['SECRET_KEY'] = 'change-this-secret-in-production'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///eduai.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-Architecture
+db = SQLAlchemy(app)
 
-The interactive_blogger_agent is constructed using the Agent class from the Google ADK. Its definition highlights several key parameters: the name, the model it uses for its reasoning capabilities, and a detailed description and instruction set that governs its behavior. Crucially, it also defines the sub_agents it can delegate tasks to and the tools it has at its disposal.
+### Database models
 
-The real power of the blogger_agent lies in its team of specialized sub-agents, each an expert in its domain.
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100))
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-Content Strategist: robust_blog_planner
+    def check_password(self, pw):
+        return check_password_hash(self.password_hash, pw)
 
-This agent is responsible for creating a well-structured and comprehensive outline for the blog post. If a codebase is provided, it will intelligently incorporate sections for code snippets and technical deep dives. To ensure high-quality output, it's implemented as a LoopAgent, a pattern that allows for retries and validation. The OutlineValidationChecker ensures that the generated outline meets predefined quality standards.
+class Progress(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    topic = db.Column(db.String(80), nullable=False)
+    correct = db.Column(db.Integer, default=0)
+    total = db.Column(db.Integer, default=0)
+    last_attempt = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-Technical Writer: robust_blog_writer
+    _table_args_ = (db.UniqueConstraint('user_id', 'topic', name='_user_topic_uc'),)
 
-Once the outline is approved, the robust_blog_writer takes over. This agent is an expert technical writer, capable of crafting in-depth and engaging articles for a sophisticated audience. It uses the approved outline and codebase summary to generate the blog post, with a strong emphasis on detailed explanations and illustrative code snippets. Like the planner, it's a LoopAgent that uses a BlogPostValidationChecker to ensure the quality of the written content.
+class Attempt(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    question_id = db.Column(db.String(80), nullable=False)  # id from question bank
+    chosen = db.Column(db.String(200))
+    correct = db.Column(db.Boolean)
+    timestamp = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
-Editor: blog_editor
 
-The blog_editor is a professional technical editor that revises the blog post based on user feedback. This allows for an iterative and collaborative writing process, ensuring the final article meets the user's expectations.
+### A small in-memory question bank (could be moved to files or DB)
+# Each question has id, topic, difficulty ('easy','medium','hard'), text, options, answer (index)
+QUESTION_BANK = [
+    # Reading - easy
+    {"id": "r1", "topic": "reading", "difficulty": "easy",
+     "text": "Which word is a noun? 'cat', 'run', or 'quickly'?", "options": ["cat", "run", "quickly"], "answer": 0},
+    {"id": "r2", "topic": "reading", "difficulty": "easy",
+     "text": "Which word means the opposite of 'big'?", "options": ["huge", "small", "tall"], "answer": 1},
 
-Social Media Marketer: social_media_writer
+    # Reading - medium
+    {"id": "r3", "topic": "reading", "difficulty": "medium",
+     "text": "Choose the best word to complete: 'She ___ to school every day.'", "options": ["go", "goes", "going"], "answer": 1},
+    {"id": "r4", "topic": "reading", "difficulty": "medium",
+     "text": "Find the adjective: 'The red ball bounced high.'", "options": ["red", "ball", "bounced"], "answer": 0},
 
-To maximize the reach of the created content, the social_media_writer generates promotional posts for platforms like Twitter and LinkedIn. This agent is an expert in social media marketing, crafting engaging and platform-appropriate content to drive traffic to the blog post.
+    # Reading - hard
+    {"id": "r5", "topic": "reading", "difficulty": "hard",
+     "text": "Identify the subject and predicate in: 'The quick brown fox jumps over the fence.'",
+     "options": ["subject: fox; predicate: jumps over the fence", "subject: jumps; predicate: the quick brown fox", "subject: fence; predicate: over the fox"], "answer": 0},
 
-Essential Tools and Utilities
-The blogger_agent and its sub-agents are equipped with a variety of tools to perform their tasks effectively.
+    # Math - easy
+    {"id": "m1", "topic": "math", "difficulty": "easy",
+     "text": "What is 2 + 3?", "options": ["4", "5", "6"], "answer": 1},
+    {"id": "m2", "topic": "math", "difficulty": "easy",
+     "text": "What number comes after 9?", "options": ["8", "10", "11"], "answer": 1},
 
-File Saving (save_blog_post_to_file)
+    # Math - medium
+    {"id": "m3", "topic": "math", "difficulty": "medium",
+     "text": "What is 7 x 6?", "options": ["42", "36", "48"], "answer": 0},
+    {"id": "m4", "topic": "math", "difficulty": "medium",
+     "text": "If you have 10 apples and give 3 away, how many left?", "options": ["6", "7", "8"], "answer": 1},
 
-A simple yet essential tool that allows the interactive_blogger_agent to export the final blog post to a Markdown file.
+    # Math - hard
+    {"id": "m5", "topic": "math", "difficulty": "hard",
+     "text": "What is (12 ÷ 3) + (4 x 2)?", "options": ["12", "14", "10"], "answer": 1},
 
-Codebase Analysis (analyze_codebase)
+    # General knowledge / science - easy
+    {"id": "g1", "topic": "science", "difficulty": "easy",
+     "text": "What do plants need to make food?", "options": ["sunlight", "music", "carrots"], "answer": 0},
+    {"id": "g2", "topic": "science", "difficulty": "easy",
+     "text": "Which is a flying animal?", "options": ["fish", "bird", "elephant"], "answer": 1},
 
-This tool is crucial for generating technically accurate and relevant content. It ingests a directory, traverses its files using glob and os, and creates a consolidated codebase_context. It even handles potential UnicodeDecodeError exceptions by attempting to read files with a different encoding, ensuring robustness.
+    # Science - medium
+    {"id": "g3", "topic": "science", "difficulty": "medium",
+     "text": "Water turns to steam when it is ___", "options": ["frozen", "boiled", "cut"], "answer": 1},
 
-Validation Checkers (OutlineValidationChecker, BlogPostValidationChecker)
+    # Add more questions as needed...
+]
 
-These custom BaseAgent implementations are a key part of the system's robustness. They check for the presence and validity of the blog outline and post, respectively. If the validation fails, they do nothing, causing the LoopAgent to retry. If the validation succeeds, they escalate with EventActions(escalate=True), which signals to the LoopAgent that it can proceed. This is a powerful mechanism for ensuring quality and controlling the flow of execution in a multi-agent system.
+TOPICS = sorted(list({q['topic'] for q in QUESTION_BANK}))
 
-Conclusion
-The beauty of the blogger_agent lies in its iterative and collaborative workflow. The interactive_blogger_agent acts as a project manager, coordinating the efforts of its specialized team. It delegates tasks, gathers user feedback, and ensures that each stage of the content creation process is completed successfully. This multi-agent coordination, powered by the Google ADK, results in a system that is modular, reusable, and scalable.
 
-The blogger_agent is a compelling demonstration of how multi-agent systems, built with powerful frameworks like Google's Agent Development Kit, can tackle complex, real-world problems. By breaking down the process of technical content creation into a series of manageable tasks and assigning them to specialized agents, it creates a workflow that is both efficient and robust.
+### Helper functions
 
-Value Statement
-Agent Shutton reduced my blog development time by 6-8 hours per week, enabling me to produce more content at higher quality. I have also been producing blogs across new domains - as the agent drives research that I'd otherwise not be able to do given time constraints and subject matter expertise.
+def seed_db():
+    """Create tables and a demo user (if not exists)."""
+    db.create_all()
+    if not User.query.filter_by(username='demo').first():
+        demo = User(name='Demo Kid', username='demo',
+                    password_hash=generate_password_hash('demo'))
+        db.session.add(demo)
+        db.session.commit()
+    # seed progress rows for demo user
+    demo = User.query.filter_by(username='demo').first()
+    for t in TOPICS:
+        p = Progress.query.filter_by(user_id=demo.id, topic=t).first()
+        if not p:
+            p = Progress(user_id=demo.id, topic=t, correct=0, total=0)
+            db.session.add(p)
+    db.session.commit()
 
-If I had more time I would add an additional agent to scan various sites for trending topics and use that research to inform my blog topics. This would require integrating applicable MCP servers or building custom tools.
+def get_user():
+    uid = session.get('user_id')
+    if not uid:
+        return None
+    return User.query.get(uid)
 
-Installation
-This project was built against Python 3.11.3.
+def get_mastery(user_id, topic):
+    """Return mastery score in [0,1] for a given user and topic.
+    If no attempts, return 0.5 (neutral)."""
+    p = Progress.query.filter_by(user_id=user_id, topic=topic).first()
+    if not p or p.total == 0:
+        return 0.5
+    return p.correct / p.total
 
-It is suggested you create a vitrual environment using your preferred tooling e.g. uv.
+def choose_question_for(user_id, topic):
+    """Adaptive selection:
+       - if mastery < 0.4 -> choose easy
+       - 0.4 <= mastery < 0.75 -> choose medium
+       - >=0.75 -> choose hard
+       Randomly pick a question not seen recently.
+    """
+    mastery = get_mastery(user_id, topic)
+    if mastery < 0.4:
+        desired = 'easy'
+    elif mastery < 0.75:
+        desired = 'medium'
+    else:
+        desired = 'hard'
+    # filter bank
+    candidates = [q for q in QUESTION_BANK if q['topic'] == topic and q['difficulty'] == desired]
+    if not candidates:
+        # fallback across difficulties
+        candidates = [q for q in QUESTION_BANK if q['topic'] == topic]
+    if not candidates:
+        return None
+    # avoid repeating the same question seen in last 5 attempts
+    recent_qids = [a.question_id for a in Attempt.query.filter_by(user_id=user_id).order_by(Attempt.timestamp.desc()).limit(10).all()]
+    filtered = [q for q in candidates if q['id'] not in recent_qids]
+    if filtered:
+        candidates = filtered
+    return random.choice(candidates)
 
-Install dependenies e.g. pip install -r requirements.txt
+def record_attempt(user_id, question_id, chosen_index, correct):
+    a = Attempt(user_id=user_id, question_id=question_id, chosen=str(chosen_index), correct=bool(correct))
+    db.session.add(a)
+    # update progress by topic
+    q = next((item for item in QUESTION_BANK if item["id"] == question_id), None)
+    if q:
+        p = Progress.query.filter_by(user_id=user_id, topic=q['topic']).first()
+        if not p:
+            p = Progress(user_id=user_id, topic=q['topic'], correct=0, total=0)
+            db.session.add(p)
+        if correct:
+            p.correct += 1
+        p.total += 1
+        p.last_attempt = datetime.datetime.utcnow()
+    db.session.commit()
 
-Running the Agent in ADK Web mode
-From the command line of the working directory execute the following command.
+def get_recommendation(user_id):
+    """Return simple recommendations per topic."""
+    recs = []
+    for t in TOPICS:
+        mastery = get_mastery(user_id, t)
+        if mastery < 0.4:
+            recs.append((t, mastery, 'Remedial: focus on basics and simple practice.'))
+        elif mastery < 0.75:
+            recs.append((t, mastery, 'Practice: keep practicing to build confidence.'))
+        else:
+            recs.append((t, mastery, 'Advance: try harder problems and challenge tasks.'))
+    return recs
 
-adk web
-Run the integration test:
+### Routes and templates
 
-python -m tests.test_agent
-Project Structure
-The project is organized as follows:
+NAV = """
+<nav style="background:#f0f8ff;padding:8px;border-radius:6px;margin-bottom:12px;">
+  <a href="/">Home</a> |
+  {% if user %}<a href="{{ url_for('dashboard') }}">Dashboard</a> | <a href="{{ url_for('logout') }}">Logout</a>{% else %}<a href="{{ url_for('login') }}">Login</a> | <a href="{{ url_for('register') }}">Sign up</a>{% endif %}
+</nav>
+"""
 
-blogger_agent/: The main Python package for the agent.
-agent.py: Defines the main interactive_blogger_agent and orchestrates the sub-agents.
-sub_agents/: Contains the individual sub-agents, each responsible for a specific task.
-blog_planner.py: Generates the blog post outline.
-blog_writer.py: Writes the blog post.
-blog_editor.py: Edits the blog post based on user feedback.
-social_media_writer.py: Generates social media posts.
-tools.py: Defines the custom tools used by the agents.
-config.py: Contains the configuration for the agents, such as the models to use.
-eval/: Contains the evaluation framework for the agent.
-tests/: Contains integration tests for the agent.
-Workflow
-The interactive_blogger_agent follows this workflow:
+INDEX_TPL = NAV + """
+<h1>Education AI — Learning for Every Child</h1>
+<p>Welcome! This prototype adapts question difficulty to the learner's level and tracks progress.</p>
+{% if user %}
+  <p>Hello, <strong>{{ user.name }}</strong> — pick a topic to start:</p>
+  <ul>
+  {% for t in topics %}
+    <li><a href="{{ url_for('start_quiz', topic=t) }}">{{ t.title() }}</a></li>
+  {% endfor %}
+  </ul>
+  <p><a href="{{ url_for('dashboard') }}">View your dashboard & progress</a></p>
+{% else %}
+  <p><a href="{{ url_for('login') }}">Login</a> or <a href="{{ url_for('register') }}">Sign up</a> to begin.</p>
+  <p>Try demo user: <strong>demo</strong> / password <strong>demo</strong></p>
+{% endif %}
+"""
 
-Analyze Codebase (Optional): If the user provides a directory, the agent analyzes the codebase to understand its structure and content.
-Plan: The agent delegates the task of generating a blog post outline to the robust_blog_planner.
-Refine: The user can provide feedback to refine the outline. The agent continues to refine the outline until it is approved by the user.
-Visuals: The agent asks the user to choose their preferred method for including visual content.
-Write: Once the user approves the outline, the agent delegates the task of writing the blog post to the robust_blog_writer.
-Edit: After the first draft is written, the agent presents it to the user and asks for feedback. The blog_editor revises the blog post based on the feedback. This process is repeated until the user is satisfied with the result.
-Social Media: After the user approves the blog post, the agent asks if they want to generate social media posts. If the user agrees, the social_media_writer is used.
-Export: When the user approves the final version, the agent asks for a filename and saves the blog post as a markdown file using the save_blog_post_to_file tool.
+REGISTER_TPL = NAV + """
+<h2>Sign up</h2>
+<form method="post">
+  Full name:<br><input name="name" required><br>
+  Username:<br><input name="username" required><br>
+  Password:<br><input name="password" type="password" required><br><br>
+  <button type="submit">Create account</button>
+</form>
+"""
+
+LOGIN_TPL = NAV + """
+<h2>Login</h2>
+<form method="post">
+  Username:<br><input name="username" required><br>
+  Password:<br><input name="password" type="password" required><br><br>
+  <button type="submit">Login</button>
+</form>
+"""
+
+QUIZ_TPL = NAV + """
+<h2>Topic: {{ topic.title() }}</h2>
+<p>Difficulty chosen: <strong>{{ q.difficulty }}</strong></p>
+<form method="post" action="{{ url_for('submit_answer') }}">
+  <p><strong>{{ q.text }}</strong></p>
+  {% for idx,opt in enumerate(q.options) %}
+    <div><label><input type="radio" name="choice" value="{{ idx }}" required> {{ opt }}</label></div>
+  {% endfor %}
+  <input type="hidden" name="question_id" value="{{ q.id }}">
+  <br><button type="submit">Submit Answer</button>
+</form>
+"""
+
+RESULT_TPL = NAV + """
+<h2>Result</h2>
+<p>{{ msg }}</p>
+<p><a href="{{ url_for('start_quiz', topic=topic) }}">Next question in {{ topic.title() }}</a></p>
+<p><a href="{{ url_for('dashboard') }}">View Dashboard</a></p>
+"""
+
+DASH_TPL = NAV + """
+<h2>Your Dashboard</h2>
+<p>Name: <strong>{{ user.name }}</strong></p>
+<table border="1" cellpadding="6" cellspacing="0">
+  <tr><th>Topic</th><th>Correct</th><th>Total</th><th>Mastery</th><th>Recommendation</th></tr>
+  {% for t, correct, total, mastery, note in rows %}
+    <tr>
+      <td>{{ t.title() }}</td>
+      <td style="text-align:center">{{ correct }}</td>
+      <td style="text-align:center">{{ total }}</td>
+      <td style="text-align:center">{{ '{:.0%}'.format(mastery) }}</td>
+      <td>{{ note }}</td>
+    </tr>
+  {% endfor %}
+</table>
+<br><h3>Recent Attempts</h3>
+<ul>
+  {% for a in attempts %}
+    <li>{{ a.timestamp.strftime('%Y-%m-%d %H:%M') }} — Q:{{ a.question_id }} — Chosen:{{ a.chosen }} — Correct:{{ 'Yes' if a.correct else 'No' }}</li>
+  {% endfor %}
+</ul>
+"""
+
+@app.route('/')
+def index():
+    user = get_user()
+    return render_template_string(INDEX_TPL, user=user, topics=TOPICS)
+
+@app.route('/register', methods=['GET','POST'])
+def register():
+    if request.method == 'POST':
+        name = request.form['name'].strip()
+        username = request.form['username'].strip()
+        password = request.form['password']
+        if User.query.filter_by(username=username).first():
+            flash('Username exists — choose another.')
+            return redirect(url_for('register'))
+        u = User(name=name, username=username, password_hash=generate_password_hash(password))
+        db.session.add(u)
+        db.session.commit()
+        # seed progress rows
+        for t in TOPICS:
+            p = Progress(user_id=u.id, topic=t, correct=0, total=0)
+            db.session.add(p)
+        db.session.commit()
+        flash('Account created. Please log in.')
+        return redirect(url_for('login'))
+    return render_template_string(REGISTER_TPL)
+
+@app.route('/login', methods=['GET','POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username'].strip()
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if not user or not user.check_password(password):
+            flash('Invalid credentials.')
+            return redirect(url_for('login'))
+        session['user_id'] = user.id
+        flash('Logged in.')
+        return redirect(url_for('index'))
+    return render_template_string(LOGIN_TPL)
+
+@app.route('/logout')
+def logout():
+    session.pop('user_id', None)
+    flash('Logged out.')
+    return redirect(url_for('index'))
+
+@app.route('/start_quiz/<topic>')
+def start_quiz(topic):
+    user = get_user()
+    if not user:
+        flash('Please log in first.')
+        return redirect(url_for('login'))
+    if topic not in TOPICS:
+        flash('Unknown topic.')
+        return redirect(url_for('index'))
+    q = choose_question_for(user.id, topic)
+    if not q:
+        flash('No questions available for this topic.')
+        return redirect(url_for('index'))
+    return render_template_string(QUIZ_TPL, user=user, q=q, topic=topic)
+
+@app.route('/submit_answer', methods=['POST'])
+def submit_answer():
+    user = get_user()
+    if not user:
+        flash('Please log in first.')
+        return redirect(url_for('login'))
+    qid = request.form.get('question_id')
+    choice = request.form.get('choice')
+    if qid is None or choice is None:
+        flash('Invalid submission.')
+        return redirect(url_for('index'))
+    try:
+        chosen_index = int(choice)
+    except:
+        chosen_index = None
+    q = next((item for item in QUESTION_BANK if item["id"] == qid), None)
+    if not q:
+        flash('Question not found.')
+        return redirect(url_for('index'))
+    correct = (chosen_index == q['answer'])
+    record_attempt(user.id, qid, chosen_index, correct)
+    msg = "Correct! Well done." if correct else f"Not correct. The right answer was: {q['options'][q['answer']]}."
+    return render_template_string(RESULT_TPL, msg=msg, topic=q['topic'])
+
+@app.route('/dashboard')
+def dashboard():
+    user = get_user()
+    if not user:
+        flash('Please log in first.')
+        return redirect(url_for('login'))
+    rows = []
+    for t in TOPICS:
+        p = Progress.query.filter_by(user_id=user.id, topic=t).first()
+        if not p:
+            correct = 0; total = 0; mastery = 0.5; note = 'No data'
+        else:
+            correct = p.correct; total = p.total
+            mastery = (correct/total) if total>0 else 0.5
+            if mastery < 0.4:
+                note = 'Remedial focus'
+            elif mastery < 0.75:
+                note = 'Keep practicing'
+            else:
+                note = 'Ready for advanced'
+        rows.append((t, correct, total, mastery, note))
+    attempts = Attempt.query.filter_by(user_id=user.id).order_by(Attempt.timestamp.desc()).limit(10).all()
+    return render_template_string(DASH_TPL, user=user, rows=rows, attempts=attempts)
+
+# Utility route to view question bank (for teacher/admin)
+@app.route('/_questions')
+def show_questions():
+    # very small admin view
+    lines = []
+    for q in QUESTION_BANK:
+        lines.append(f"{q['id']}: [{q['topic']}/{q['difficulty']}] {q['text']} -- options={q['options']} answer={q['answer']}")
+    return "<pre>" + "\n".join(lines) + "</pre>"
+
+if _name_ == '_main_':
+    seed_db()
+    app.run(debug=True)
